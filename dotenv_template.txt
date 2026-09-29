@@ -1,0 +1,5 @@
+TOGGL_KEY_DANN=""
+TOGGL_KEY_ADAM=""
+TOGGL_ORG_ID="21612196"
+TOGGL_WORKSPACE_ID="21611425"
+DB_PATH="U:\\UWHealth\\EA\\ShareAll\\Client Areas\\Clinical Operations\\Emergency Med & Surgical Services\\Emergency Med\\SMPH Matrix\\Misc RDS\\Time Logging\\toggl_sqlite.db"

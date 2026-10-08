@@ -1,5 +1,4 @@
 import requests
-import dotenv
 import pandas as pd
 import polars as pl
 
@@ -58,15 +57,33 @@ def fn_parse_toggl_time_entries(df_logged_time: pd.DataFrame) -> pl.DataFrame:
 
 def fn_get_toggl_static_files(api_values: dict[str, str, str, str]) -> dict[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     # Projects
-    resp_projects = requests.get(
-        f"https://focus.toggl.com/api/organizations/{api_values['ORG_ID']}/workspaces/{api_values['WS_ID']}/projects",
-        headers={
-            'content-type': 'application/json',
-            'Authorization': f"Bearer {api_values['API_KEY']}",
-        },
-    )
-    df_projects = pd.DataFrame(resp_projects.json().get('data'))
+    more_pages = True
+    page = 0
+    while more_pages:
+        page = page + 1
+        resp_projects = requests.get(
+            f"https://focus.toggl.com/api/organizations/{api_values['ORG_ID']}/workspaces/{api_values['WS_ID']}/projects",
+            params={
+                'active': 'both',
+                'page': page,
+                'per_page': 100
+            },
+            headers={
+                'content-type': 'application/json',
+                'Authorization': f"Bearer {api_values['API_KEY']}",
+            }
+        )
+        df_projects_page = pd.DataFrame(resp_projects.json().get('data'))
+        if df_projects_page.empty:
+            more_pages = False
+            break
+        if 'df_projects' in locals():
+            df_projects = pd.concat([df_projects, df_projects_page], axis=0, join='outer', ignore_index=True)
+        else:
+            df_projects = df_projects_page
+    #
     # Clients
+    # Ignoring page limits for Clients since we never expect to have that many here
     resp_clients = requests.get(
         f"https://focus.toggl.com/api/workspaces/{api_values['WS_ID']}/clients",
         headers={

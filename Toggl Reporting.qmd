@@ -1,0 +1,195 @@
+---
+title: "Time Reporting"
+format: 
+  html:
+    toc: true
+    toc-depth: 2
+    toc-location: left
+    code-fold: true
+    code-summary: "Click to show/hide code"
+    embed-resources: true
+jupyter: python3
+
+---
+
+```{python}
+#| label: setup
+import dotenv
+import polars as pl
+import plotnine as pn
+from great_tables import GT as gt
+import datetime
+import polars.selectors as cs
+
+rerun=False
+if rerun:
+    from run_toggl_to_sql import fn_update_toggl_database
+    fn_update_toggl_database(drop_db=False)
+
+
+db_path = dotenv.get_key('.env', 'DB_PATH')
+try:
+    df_time_entries = pl.read_database_uri(
+        'select * from time_entries',
+        f"sqlite:///{db_path}"
+    )
+except Exception as e:
+    print(f"Error getting time entries from Toggl database: {e}")
+```
+
+:::{.column-page}
+:::{.panel-tabset}
+
+## Topline Numbers By Mission
+
+```{python}
+#| label: by_mission_tbl_func
+
+def fn_tbl_by_mission(df_time_entries):
+    st_dt = min(df_time_entries.select(pl.col('start'))[:,'start'].str.to_datetime(time_zone="UTC").dt.date())
+    en_dt = max(df_time_entries.select(pl.col('start'))[:,'start'].str.to_datetime(time_zone="UTC").dt.date())
+    d = df_time_entries.group_by(
+        ['toggl_user_name', 'client_name']
+    ).agg(
+        (pl.sum('duration') / 3600).alias('hours')
+    ).filter(
+        ~pl.col('client_name').is_null(),
+        ~pl.col('client_name').eq('PTO')
+    ).select(
+        pl.col('toggl_user_name').alias('Analyst'),
+        pl.col('client_name').alias('Mission'),
+        pl.col('hours'),
+        (pl.col('hours') / pl.sum('hours').over('toggl_user_name')).alias('percent')
+    ).pivot(
+        on='Analyst',
+        index='Mission',
+        values=[ 'hours', 'percent' ]
+    ).sort('Mission').select(
+        pl.col('Mission'),
+        cs.ends_with('Adam'),
+        cs.ends_with('Dann')
+    )
+    #
+    t = gt(d).cols_label(
+        Mission="Mission",
+        hours_Dann="Hours",
+        hours_Adam="Hours",
+        percent_Adam="Percent of Total",
+        percent_Dann="Percent of Total"
+    ).fmt_percent(
+        columns=cs.starts_with('percent'),
+        decimals=1
+    ).fmt_number(
+        columns=cs.starts_with('hour'),
+        decimals=1
+    ).tab_spanner(
+        columns=cs.ends_with('Adam'),
+        label="Adam"
+    ).tab_spanner(
+        columns=cs.ends_with('Dann'),
+        label="Dann"
+    ).sub_missing(
+        columns = cs.all(),
+        missing_text = '---'
+    ).tab_footnote(
+        f"Only includes entries from {st_dt.strftime('%x')} to {en_dt.strftime('%x')}.\nExcludes PTO time."
+    )
+    return t
+```
+
+::::{.columns}
+
+:::::{.column width="47.5%"}
+
+## Last 30 Days
+
+```{python}
+#| label: tbl-last-30-days
+
+end_date = max(df_time_entries.select(pl.col('start'))[:,'start'].str.to_datetime(time_zone="UTC").dt.date())
+start_date = end_date - datetime.timedelta(days=30)
+df_last_30_days = df_time_entries.filter(
+    pl.col('start').str.to_datetime(time_zone="UTC").dt.date().is_between(start_date, end_date)
+)
+fn_tbl_by_mission(df_last_30_days)
+```
+
+:::::
+
+:::::{.column width="5%"}
+<!-- Buffer -->
+:::::
+
+:::::{.column width="47.5%"}
+
+## Fiscal Year to Date
+
+```{python}
+#| label: tbl-fiscal-ytd
+
+end_date = max(df_time_entries.select(pl.col('start'))[:,'start'].str.to_datetime(time_zone="UTC").dt.date())
+start_date = datetime.date(2026, 7, 1) #Hard Coded for now. sue me. 
+df_fytd = df_time_entries.filter(
+    pl.col('start').str.to_datetime(time_zone="UTC").dt.date().is_between(start_date, end_date)
+)
+fn_tbl_by_mission(df_fytd)
+```
+
+:::::
+
+::::
+
+
+## Data Integrity Checks
+
+### Missing Client Names
+
+```{python}
+#| label: data_integrity_checks
+#| 
+gt(df_time_entries.filter(
+    pl.col('client_name').eq('') |
+    pl.col('client_name').is_null()
+).select(['id', 'toggl_user_name', 'description', 'start', 'project_name'])
+).cols_label(
+    id="Time Entry ID",
+    toggl_user_name="Toggl User Name",
+    description="Description",
+    start="Start Time",
+    project_name="Project Name"
+).fmt_date(
+    columns="start", 
+    date_style="wd_m_day_year"
+)
+```
+
+### Invalid Client Names
+```{python}
+#| label: data_integrity_checks2
+gt(df_time_entries.filter(
+    ~pl.col('client_name').is_in([
+        "Research: Externally Funded",
+        "Education",
+        "Administrative/Leadership",
+        "Research: UW/DEM Funded",
+        "Clinical",
+        "PTO"
+    ])).select(
+        ['id', 'toggl_user_name', 'description', 'start', 'project_name', 'client_name']
+    )
+).cols_label(
+    id="Time Entry ID",
+    toggl_user_name="Toggl User Name",
+    description="Description",
+    start="Start Time",
+    project_name="Project Name",
+    client_name="Client Name"
+).fmt_date(
+    columns="start",
+    date_style="wd_m_day_year"
+)
+
+```
+
+:::
+:::

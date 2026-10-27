@@ -9,7 +9,10 @@ format:
     code-summary: "Click to show/hide code"
     embed-resources: true
 jupyter: python3
-
+execute:
+  engine: jupyter
+  message: false
+  warning: false
 ---
 
 ```{python}
@@ -28,19 +31,18 @@ if rerun:
 
 
 db_path = dotenv.get_key('.env', 'DB_PATH')
-try:
-    df_time_entries = pl.read_database_uri(
-        'select * from time_entries',
-        f"sqlite:///{db_path}"
-    )
-except Exception as e:
-    print(f"Error getting time entries from Toggl database: {e}")
+# try:
+df_time_entries = pl.read_database_uri(
+    'select * from time_entries',
+    f"sqlite:///{db_path}"
+)
+# except Exception as e:
+#    print(f"Error getting time entries from Toggl database: {e}")
 ```
 
-:::{.column-page}
-:::{.panel-tabset}
-
 ## Topline Numbers By Mission
+
+:::{.column-screen-inset}
 
 ```{python}
 #| label: by_mission_tbl_func
@@ -91,21 +93,24 @@ def fn_tbl_by_mission(df_time_entries):
     ).sub_missing(
         columns = cs.all(),
         missing_text = '---'
-    ).tab_footnote(
-        f"Only includes entries from {st_dt.strftime('%x')} to {en_dt.strftime('%x')}.\nExcludes PTO time."
     )
+    #
+    #I don't know why this isn't working, but it's not, so excluding for now
+    #.tab_footnote(
+    #    f"Only includes entries from {start_date.strftime('%x')} to {end_date.strftime('%x')}.\nExcludes PTO time."
+    #)
     return t
 ```
 
-::::{.columns}
+:::{.columns}
 
-:::::{.column width="47.5%"}
+:::{.column width="47.5%"}
 
 ## Last 30 Days
 
 ```{python}
 #| label: tbl-last-30-days
-
+#| tbl-cap: Distribution of Time by Mission - Last Month
 end_date = max(df_time_entries.select(pl.col('start'))[:,'start'].str.to_datetime(time_zone="UTC").dt.date())
 start_date = end_date - datetime.timedelta(days=30)
 df_last_30_days = df_time_entries.filter(
@@ -113,20 +118,21 @@ df_last_30_days = df_time_entries.filter(
 )
 fn_tbl_by_mission(df_last_30_days)
 ```
+Only includes entries from `{python} start_date.strftime('%x')` to `{python} end_date.strftime('%x')`. Excludes PTO time.
 
-:::::
+:::
 
-:::::{.column width="5%"}
+:::{.column width="5%"}
 <!-- Buffer -->
-:::::
+:::
 
-:::::{.column width="47.5%"}
+:::{.column width="47.5%"}
 
 ## Fiscal Year to Date
 
 ```{python}
 #| label: tbl-fiscal-ytd
-
+#| tbl-cap: Distribution of Time by Mission - Fiscal Year-to-Date
 end_date = max(df_time_entries.select(pl.col('start'))[:,'start'].str.to_datetime(time_zone="UTC").dt.date())
 start_date = datetime.date(2026, 7, 1) #Hard Coded for now. sue me. 
 df_fytd = df_time_entries.filter(
@@ -135,18 +141,125 @@ df_fytd = df_time_entries.filter(
 fn_tbl_by_mission(df_fytd)
 ```
 
-:::::
+Only includes entries from `{python} start_date.strftime('%x')` to `{python} end_date.strftime('%x')`. Excludes PTO time.
 
-::::
+:::
 
+<!-- End Columns for Tables -->
+::: 
+
+<!-- Close the Page-wide column -->
+::: 
+
+## Over Time
+
+```{python}
+#| label: fig-overtime-bars
+#| fig-cap: Hours Logged by Mission Over Time
+#| fig-align: 'center'
+df_gg_by_month_client = (
+    df_time_entries
+    .filter(
+        ~pl.col('client_name').is_null(),
+        ~pl.col('client_name').eq('PTO')
+    )
+    .group_by(['month', 'client_name'])
+    .agg((pl.sum('duration') / 3600).alias('hours'))
+    .with_columns(
+        (pl.col('hours') / pl.sum('hours').over('month')).alias('percent')
+    )
+    .with_columns(
+        pl.col('percent').map_elements(lambda value: f"{value:.1%}", return_dtype=pl.String).alias("percent_label")
+    )
+    .filter(~pl.col('hours').is_nan())
+)
+df_gg_by_month = (
+    df_gg_by_month_client
+    .group_by('month')
+    .agg(pl.sum('hours'))
+    .with_columns(
+        pl.col('hours').ceil().cast(pl.Int32).alias('hours_label')
+    )
+)
+
+gg_by_month_client = pn.ggplot(
+    df_gg_by_month_client,
+    pn.aes(
+        x='month',
+        y='hours',
+        fill='client_name',
+        label='percent_label'
+    )
+) + pn.geom_bar(
+    stat='identity',
+    position='stack',
+    color='black'
+) + pn.geom_text(
+    position = pn.position_stack(vjust = 0.5)
+) + pn.geom_text(
+    data = df_gg_by_month,
+    mapping = pn.aes(
+        label = 'hours_label',
+        fill = None
+    ),
+    nudge_y = 10
+) + pn.scale_y_continuous(
+    name = 'Hours Logged',
+    expand = (0, 0, 0, 20)
+) + pn.scale_x_date(
+    name = 'Month',
+    date_breaks = '1 month',
+    date_labels = '%b %Y'
+) + pn.scale_fill_brewer(
+    name = 'Mission',
+    breaks = [
+        'Administrative/Leadership', 'Clinical', 'Education', 
+        'Research: Externally Funded', 'Research: UW/DEM Funded'],
+    type = 'qualitative',
+    palette = 6
+) + pn.labs(
+    caption = 'Summed across Dann and Adam; Excludes PTO.'
+) + pn.theme_minimal()
+
+gg_by_month_client
+```
+
+## Externally Funded Research (Only Dann)
+
+```{python}
+j=(df_time_entries
+    .filter(
+        pl.col('client_name').eq("Research: Externally Funded"),
+        pl.col('toggl_user_name').eq('Dann')
+    )
+    .with_columns(
+        pl.col('month').str.to_date().dt.strftime('%b %Y').alias('fmonth')
+    )
+    .group_by(['project_name', 'month', 'fmonth'])
+    .agg((pl.sum('duration') / 3600).alias('hours'))
+    .sort(['month'])
+    .drop(['month'])
+    .pivot(['fmonth'], values=['hours'])
+)
+gt(j).cols_label(
+    project_name="Grant"
+).fmt_number(
+    columns=cs.exclude('project_name'),
+    decimals=1
+)
+```
+
+## Technical 
+
+::: {.callout-warning collapse="true"}
 
 ## Data Integrity Checks
 
 ### Missing Client Names
 
 ```{python}
-#| label: data_integrity_checks
-#| 
+#| label: tbl-data_integrity_checks
+#| tbl-cap: Data Integrity Check - Missing Mission
 gt(df_time_entries.filter(
     pl.col('client_name').eq('') |
     pl.col('client_name').is_null()
@@ -165,7 +278,8 @@ gt(df_time_entries.filter(
 
 ### Invalid Client Names
 ```{python}
-#| label: data_integrity_checks2
+#| label: tbl-data_integrity_checks2
+#| tbl-cap: Data Integrity Check - Unmapped Mission Label
 gt(df_time_entries.filter(
     ~pl.col('client_name').is_in([
         "Research: Externally Funded",
@@ -191,5 +305,5 @@ gt(df_time_entries.filter(
 
 ```
 
-:::
-:::
+<!-- Close Collapsed Integrity Checks -->
+::: 
